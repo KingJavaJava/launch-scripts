@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-
+shopt -s expand_aliases
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,7 @@ fi
 
 export SCRIPT_DIR=$(dirname $(readlink -f $0 2>/dev/null) 2>/dev/null || echo "${PWD}/$(dirname $0)")
 PROJECT_ID_SUFFIX=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 6 | head -n 1)
-
+START_DIR=${PWD}
 # Create a logs folder and file and send stdout and stderr to console and log file 
 mkdir -p ${SCRIPT_DIR}/infra
 SCRIPT_DIR=${SCRIPT_DIR}/infra
@@ -114,7 +114,8 @@ while [ -z ${IAM_GROUP} ]
 TEMPLATE_ORG="cloudguy-dev"
 TEMPLATE_INFRA_REPO="software-delivery-platform-infra"
 GITHUB_SECRET_NAME="github-token"
-
+TIMESTAMP=$(date "+%Y%m%d%H%M%S")
+SA_FOR_API_KEY="api-key-sa-${TIMESTAMP}" 
 # Validate active user is billing admin for billing account
 gcloud beta billing accounts get-iam-policy ${BILLING_ACCOUNT_ID} --format=json | \
 jq '.bindings[] | select(.role=="roles/billing.admin")' | grep $ADMIN_USER &>/dev/null
@@ -123,6 +124,102 @@ jq '.bindings[] | select(.role=="roles/billing.admin")' | grep $ADMIN_USER &>/de
 
 INFRA_SETUP_PROJECT_ID=${INFRA_SETUP_PROJECT}-${PROJECT_ID_SUFFIX}
 #APP_SETUP_PROJECT_ID=${APP_SETUP_PROJECT}-${PROJECT_ID_SUFFIX}
+
+#FUNCTIONS DEFINITIONS BELOW
+generate_api_key () {
+    title_no_wait "Creaing a Service Account for creating an API key ..." 
+    print_and_execute "gcloud iam service-accounts create ${SA_FOR_API_KEY}  --display-name \"API Key {SA_FOR_API_KEY}\""
+
+    title_no_wait "Granting access to cloudbuild SA for accessing the API key ..." 
+    print_and_execute "gcloud projects add-iam-policy-binding ${INFRA_SETUP_PROJECT_ID} \
+                       --member serviceAccount:${SA_FOR_API_KEY}@${INFRA_SETUP_PROJECT_ID}.iam.gserviceaccount.com \
+                       --role roles/serviceusage.apiKeysAdmin"
+
+    title_no_wait "Creating credentials for the SA ..."   
+    print_and_execute "gcloud iam service-accounts keys create ~/credentials.json \
+                       --iam-account ${SA_FOR_API_KEY}@${INFRA_SETUP_PROJECT_ID}.iam.gserviceaccount.com"
+
+    if [[ `which oauth2l | wc -l` -eq 0 ]]; then
+        title_no_wait "oauth2l not installed"
+        title_no_wait "Download and install oauth2l ..." 
+        print_and_execute "git clone  https://${GITHUB_USER}:${TOKEN}@github.com/google/oauth2l oauth2l-${TIMESTAMP}"
+        print_and_execute "cd oauth2l-${TIMESTAMP}"
+        print_and_execute "make dev"
+        print_and_execute "oauth2l fetch --credentials ~/credentials.json --scope cloud-platform"
+        print_and_execute "alias gcurl='curl -S -H \"$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)\" -H \"Content-Type: application/json\"'"
+    
+    else
+        title_no_wait "oauth2l is already installed ..." 
+        print_and_execute "alias gcurl='curl -S -H \"$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)\" -H \"Content-Type: application/json\"'"
+        #print_and_execute "alias gcurl='curl -S -H "$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)" -H "Content-Type: application/json"'"
+    fi
+
+    title_no_wait "checking if we are all set to create API key ..." 
+    print_and_execute "type gcurl"
+    if [ $? -ne 0 ]; then
+        title_no_wait "gcurl alias not set. Problem in using oauth2l. Exiting"
+        exit 1
+    fi
+
+    title_no_wait "Creating a API key for webhook ..." 
+    print_and_execute "operation_id=$(gcurl https://apikeys.googleapis.com/v2/projects/${INFRA_PROJECT_NUMBER}/locations/global/keys -X POST -d '{"displayName" : "webhook","restrictions": {"api_targets": [{"service": "cloudbuild.googleapis.com"}]}}' | jq .name)"
+    title_no_wait "Polling for the operation to complete ..."  
+    status="false"
+    while  [ ${status} != "true" ]
+    do
+        title_no_wait "Waititng for operation to create API to complete. Sleeping for 5"
+        print_and_execute "status=$(gcurl https://apikeys.googleapis.com/v2/${operation_id} | jq .done)"
+        if [[ -z ${status} ]]; then
+            title_no_wait "Unable to fetch the status of API key create operaton. Possibly the command to create API key had issues. Aborting"
+            exit   
+        fi
+        sleep 5
+    done
+    print_and_execute "API_KEY=$(gcurl https://apikeys.googleapis.com/v2/${operation_id} | jq .response.keyString)"
+}
+
+create_webhook () {
+
+    title_no_wait "Creating a secret for webhook ..." 
+    SECRET_NAME=webhook-secret-${TIMESTAMP}
+    SECRET_VALUE=$(sed "s/[^a-zA-Z0-9]//g" <<< $(openssl rand -base64 15))
+    SECRET_PATH=projects/${INFRA_PROJECT_NUMBER}/secrets/${SECRET_NAME}/versions/1
+    print_and_execute "printf ${SECRET_VALUE} | gcloud secrets create ${SECRET_NAME} --data-file=-"
+    title_no_wait "Providing read access to Cloudbuild service account on the secret ..." 
+    print_and_execute "gcloud secrets add-iam-policy-binding ${SECRET_NAME} \
+         --member=serviceAccount:service-${INFRA_PROJECT_NUMBER}@gcp-sa-cloudbuild.iam.gserviceaccount.com \
+         --role='roles/secretmanager.secretAccessor'"
+ 
+    title_no_wait "Creating a webhook trigger ..."  
+    #print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+    print_and_execute "gcloud alpha builds triggers create webhook --name=\"infra-trigger-${TIMESTAMP}\"  --inline-config=\"${START_DIR}/${TEMPLATE_INFRA_REPO}/cloudbuild.yaml\" --secret=${SECRET_PATH} --substitutions='_REF=\$(body.ref),_REPO=\$(body.repository.full_name)'" 
+    ## Retrieve the URL
+    WEBHOOK_URL="https://cloudbuild.googleapis.com/v1/projects/${INFRA_SETUP_PROJECT_ID}/triggers/infra-trigger-${TIMESTAMP}:webhook?key=${API_KEY}&secret=${SECRET_VALUE}"
+
+    title_no_wait "Creating a github trigger ..."  
+ 
+    print_and_execute "curl -H \"Authorization: token ${TOKEN}\" \
+     -d '{\"config\": {\"url\": \"${WEBHOOK_URL}\", \"content_type\": \"json\"}}' \
+     -X POST https://api.github.com/repos/$GITHUB_ORG/$INFRA_SETUP_REPO/hooks"
+
+}
+
+#This function is only defined but not called in the script. It is used to create CloudBuild in GCP project to Github integration and then create triggers on it.
+#It require someone to manaully perform few steps , for that reason, we decided to use webhooks instead to have as much automation as possible
+create_triggers () {    
+title_and_wait "ATTENTION : We need to connect Cloud Build in ${INFRA_SETUP_PROJECT_ID} with your github repo. As of now, there is no way of doing it automatically, press ENTER for instructions for doing it manually."
+title_and_wait_step "Go to https://console.cloud.google.com/cloud-build/triggers/connect?project=${INFRA_PROJECT_NUMBER} \
+Select \"Source\" as github and press continue. \
+If it asks for authentication, enter your github credentials. \
+Under \"Select Repository\" , on \"github account\" drop down click on \"+Add\" and choose ${GITHUB_ORG}. \
+Click on \"repository\" drop down and select ${INFRA_SETUP_REPO}. \
+Click the checkbox to agree to the terms and conditions and click connect. \
+Click Done. \
+"
+
+title_no_wait "Creating Cloud Build trigger..."
+print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+}
 
 # Create folder if the FOLDER_NAME was not entered blank
 if [[ -n ${FOLDER_NAME} ]]; then 
@@ -240,6 +337,7 @@ cloudbuild.googleapis.com \
 iam.googleapis.com \
 secretmanager.googleapis.com \
 container.googleapis.com \
+apikeys.googleapis.com \
 cloudidentity.googleapis.com"
 
 title_no_wait "Creating IAM Group..."
@@ -277,18 +375,8 @@ INFRA_TF_BUCKET="${INFRA_SETUP_PROJECT_ID}-infra-tf"
 title_no_wait "Creating GCS bucket for holding terraform state files..."
 print_and_execute "gsutil mb gs://${INFRA_TF_BUCKET}"
 
-title_and_wait "ATTENTION : We need to connect Cloud Build in ${INFRA_SETUP_PROJECT_ID} with your github repo. As of now, there is no way of doing it automatically, press ENTER for instructions for doing it manually."
-title_and_wait_step "Go to https://console.cloud.google.com/cloud-build/triggers/connect?project=${INFRA_PROJECT_NUMBER} \
-Select \"Source\" as github and press continue. \
-If it asks for authentication, enter your github credentials. \
-Under \"Select Repository\" , on \"github account\" drop down click on \"+Add\" and choose ${GITHUB_ORG}. \
-Click on \"repository\" drop down and select ${INFRA_SETUP_REPO}. \
-Click the checkbox to agree to the terms and conditions and click connect. \
-Click Done. \
-"
-
-title_no_wait "Creating Cloud Build trigger..."
-print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+generate_api_key
+create_webhook
 
 title_no_wait "Checkout dev branch..."
 print_and_execute "git checkout dev"
@@ -301,7 +389,7 @@ sed -i "s/YOUR_ORG_ID/${ORG_ID}/"  env/*/variables.tf
 if [[ -n ${FOLDER_ID} ]]; then
     sed -i "s/YOUR_FOLDER_ID/${FOLDER_ID}/"  env/*/variables.tf
 else
-    sed -i "s/YOUR_FOLDER_ID/\"\"/"  env/*/variables.tf
+    sed -i "s/YOUR_FOLDER_ID//"  env/*/variables.tf
 fi
 
 title_no_wait "Replacing variables in variables.tf under dev folder only in ${INFRA_SETUP_REPO}..."
@@ -321,3 +409,4 @@ git commit -m "Initial setup"
 git push
 
 title_and_wait "The push to the ${INFRA_SETUP_REPO} has started the cloudbuild trigger. Go to https://console.cloud.google.com/cloud-build/builds?project=${INFRA_SETUP_PROJECT} . Enter to exit the script"
+
