@@ -112,7 +112,7 @@ while [ -z ${IAM_GROUP} ]
     
 # This will change based on where we keep the template repos    
 TEMPLATE_ORG="cloudguy-dev"
-TEMPLATE_INFRA_REPO="software-delivery-platform-infra"
+TEMPLATE_INFRA_REPO="multi-tenant-platform-infra"
 GITHUB_SECRET_NAME="github-token"
 TIMESTAMP=$(date "+%Y%m%d%H%M%S")
 SA_FOR_API_KEY="api-key-sa-${TIMESTAMP}" 
@@ -147,7 +147,7 @@ generate_api_key () {
         print_and_execute "make dev"
         print_and_execute "oauth2l fetch --credentials ~/credentials.json --scope cloud-platform"
         print_and_execute "alias gcurl='curl -S -H \"$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)\" -H \"Content-Type: application/json\"'"
-    
+        print_and_execute "cd .."
     else
         title_no_wait "oauth2l is already installed ..." 
         print_and_execute "alias gcurl='curl -S -H \"$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)\" -H \"Content-Type: application/json\"'"
@@ -179,7 +179,6 @@ generate_api_key () {
 }
 
 create_webhook () {
-
     title_no_wait "Creating a secret for webhook ..." 
     SECRET_NAME=webhook-secret-${TIMESTAMP}
     SECRET_VALUE=$(sed "s/[^a-zA-Z0-9]//g" <<< $(openssl rand -base64 15))
@@ -192,7 +191,7 @@ create_webhook () {
  
     title_no_wait "Creating a webhook trigger ..."  
     #print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
-    print_and_execute "gcloud alpha builds triggers create webhook --name=\"infra-trigger-${TIMESTAMP}\"  --inline-config=\"${START_DIR}/${TEMPLATE_INFRA_REPO}/cloudbuild.yaml\" --secret=${SECRET_PATH} --substitutions='_REF=\$(body.ref),_REPO=\$(body.repository.full_name)'" 
+    print_and_execute "gcloud alpha builds triggers create webhook --name=\"infra-trigger-${TIMESTAMP}\" --inline-config=\"${START_DIR}/${TEMPLATE_INFRA_REPO}/cloudbuild_webhooks.yaml\" --secret=${SECRET_PATH}" 
     ## Retrieve the URL
     WEBHOOK_URL="https://cloudbuild.googleapis.com/v1/projects/${INFRA_SETUP_PROJECT_ID}/triggers/infra-trigger-${TIMESTAMP}:webhook?key=${API_KEY}&secret=${SECRET_VALUE}"
 
@@ -201,24 +200,27 @@ create_webhook () {
     print_and_execute "curl -H \"Authorization: token ${TOKEN}\" \
      -d '{\"config\": {\"url\": \"${WEBHOOK_URL}\", \"content_type\": \"json\"}}' \
      -X POST https://api.github.com/repos/$GITHUB_ORG/$INFRA_SETUP_REPO/hooks"
-
 }
 
 #This function is only defined but not called in the script. It is used to create CloudBuild in GCP project to Github integration and then create triggers on it.
 #It require someone to manaully perform few steps , for that reason, we decided to use webhooks instead to have as much automation as possible
-create_triggers () {    
-title_and_wait "ATTENTION : We need to connect Cloud Build in ${INFRA_SETUP_PROJECT_ID} with your github repo. As of now, there is no way of doing it automatically, press ENTER for instructions for doing it manually."
-title_and_wait_step "Go to https://console.cloud.google.com/cloud-build/triggers/connect?project=${INFRA_PROJECT_NUMBER} \
-Select \"Source\" as github and press continue. \
-If it asks for authentication, enter your github credentials. \
-Under \"Select Repository\" , on \"github account\" drop down click on \"+Add\" and choose ${GITHUB_ORG}. \
-Click on \"repository\" drop down and select ${INFRA_SETUP_REPO}. \
-Click the checkbox to agree to the terms and conditions and click connect. \
-Click Done. \
-"
+create_github_app_triggers () {    
+    title_and_wait "ATTENTION : We need to connect Cloud Build in ${INFRA_SETUP_PROJECT_ID} with your github repo. As of now, there is no way of doing it automatically, press ENTER for instructions for doing it manually."
+    title_and_wait_step "Go to https://console.cloud.google.com/cloud-build/triggers/connect?project=${INFRA_PROJECT_NUMBER} \
+    Select \"Source\" as github and press continue. \
+    If it asks for authentication, enter your github credentials. \
+    Under \"Select Repository\" , on \"github account\" drop down click on \"+Add\" and choose ${GITHUB_ORG}. \
+    Click on \"repository\" drop down and select ${INFRA_SETUP_REPO}. \
+    Click the checkbox to agree to the terms and conditions and click connect. \
+    Click Done. \
+    "
 
-title_no_wait "Creating Cloud Build trigger..."
+    title_no_wait "Creating Cloud Build trigger..."
+    print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
 print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+    print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+    print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
 }
 
 # Create folder if the FOLDER_NAME was not entered blank
