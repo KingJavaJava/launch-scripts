@@ -112,7 +112,9 @@ while [ -z ${IAM_GROUP} ]
     
 # This will change based on where we keep the template repos    
 TEMPLATE_ORG="cloudguy-dev"
-TEMPLATE_INFRA_REPO="multi-tenant-platform-infra"
+TEMPLATE_INFRA_REPO="software-delivery-platform-infra"
+TEMPLATE_ACM_REPO="acm-template"
+ACM_REPO="acm-${INFRA_SETUP_REPO}"
 GITHUB_SECRET_NAME="github-token"
 TIMESTAMP=$(date "+%Y%m%d%H%M%S")
 SA_FOR_API_KEY="api-key-sa-${TIMESTAMP}" 
@@ -142,12 +144,12 @@ generate_api_key () {
     if [[ `which oauth2l | wc -l` -eq 0 ]]; then
         title_no_wait "oauth2l not installed"
         title_no_wait "Download and install oauth2l ..." 
-        print_and_execute "git clone  https://${GITHUB_USER}:${TOKEN}@github.com/google/oauth2l oauth2l-${TIMESTAMP}"
-        print_and_execute "cd oauth2l-${TIMESTAMP}"
+        print_and_execute "git clone  https://${GITHUB_USER}:${TOKEN}@github.com/google/oauth2l ${START_DIR}/oauth2l-${TIMESTAMP}"
+        print_and_execute "cd ${START_DIR}/oauth2l-${TIMESTAMP}"
         print_and_execute "make dev"
         print_and_execute "oauth2l fetch --credentials ~/credentials.json --scope cloud-platform"
         print_and_execute "alias gcurl='curl -S -H \"$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)\" -H \"Content-Type: application/json\"'"
-        print_and_execute "cd .."
+    
     else
         title_no_wait "oauth2l is already installed ..." 
         print_and_execute "alias gcurl='curl -S -H \"$(oauth2l header --json ~/credentials.json cloud-platform userinfo.email)\" -H \"Content-Type: application/json\"'"
@@ -179,6 +181,7 @@ generate_api_key () {
 }
 
 create_webhook () {
+
     title_no_wait "Creating a secret for webhook ..." 
     SECRET_NAME=webhook-secret-${TIMESTAMP}
     SECRET_VALUE=$(sed "s/[^a-zA-Z0-9]//g" <<< $(openssl rand -base64 15))
@@ -191,7 +194,7 @@ create_webhook () {
  
     title_no_wait "Creating a webhook trigger ..."  
     #print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
-    print_and_execute "gcloud alpha builds triggers create webhook --name=\"infra-trigger-${TIMESTAMP}\" --inline-config=\"${START_DIR}/${TEMPLATE_INFRA_REPO}/cloudbuild_webhooks.yaml\" --secret=${SECRET_PATH}" 
+    print_and_execute "gcloud alpha builds triggers create webhook --name=\"infra-trigger-${TIMESTAMP}\"  --inline-config=\"${START_DIR}/${TEMPLATE_INFRA_REPO}/cloudbuild.yaml\" --secret=${SECRET_PATH} --substitutions='_REF=\$(body.ref),_REPO=\$(body.repository.full_name)'" 
     ## Retrieve the URL
     WEBHOOK_URL="https://cloudbuild.googleapis.com/v1/projects/${INFRA_SETUP_PROJECT_ID}/triggers/infra-trigger-${TIMESTAMP}:webhook?key=${API_KEY}&secret=${SECRET_VALUE}"
 
@@ -200,27 +203,24 @@ create_webhook () {
     print_and_execute "curl -H \"Authorization: token ${TOKEN}\" \
      -d '{\"config\": {\"url\": \"${WEBHOOK_URL}\", \"content_type\": \"json\"}}' \
      -X POST https://api.github.com/repos/$GITHUB_ORG/$INFRA_SETUP_REPO/hooks"
+
 }
 
 #This function is only defined but not called in the script. It is used to create CloudBuild in GCP project to Github integration and then create triggers on it.
 #It require someone to manaully perform few steps , for that reason, we decided to use webhooks instead to have as much automation as possible
-create_github_app_triggers () {    
-    title_and_wait "ATTENTION : We need to connect Cloud Build in ${INFRA_SETUP_PROJECT_ID} with your github repo. As of now, there is no way of doing it automatically, press ENTER for instructions for doing it manually."
-    title_and_wait_step "Go to https://console.cloud.google.com/cloud-build/triggers/connect?project=${INFRA_PROJECT_NUMBER} \
-    Select \"Source\" as github and press continue. \
-    If it asks for authentication, enter your github credentials. \
-    Under \"Select Repository\" , on \"github account\" drop down click on \"+Add\" and choose ${GITHUB_ORG}. \
-    Click on \"repository\" drop down and select ${INFRA_SETUP_REPO}. \
-    Click the checkbox to agree to the terms and conditions and click connect. \
-    Click Done. \
-    "
+create_triggers () {    
+title_and_wait "ATTENTION : We need to connect Cloud Build in ${INFRA_SETUP_PROJECT_ID} with your github repo. As of now, there is no way of doing it automatically, press ENTER for instructions for doing it manually."
+title_and_wait_step "Go to https://console.cloud.google.com/cloud-build/triggers/connect?project=${INFRA_PROJECT_NUMBER} \
+Select \"Source\" as github and press continue. \
+If it asks for authentication, enter your github credentials. \
+Under \"Select Repository\" , on \"github account\" drop down click on \"+Add\" and choose ${GITHUB_ORG}. \
+Click on \"repository\" drop down and select ${INFRA_SETUP_REPO}. \
+Click the checkbox to agree to the terms and conditions and click connect. \
+Click Done. \
+"
 
-    title_no_wait "Creating Cloud Build trigger..."
-    print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
+title_no_wait "Creating Cloud Build trigger..."
 print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
-    print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
-print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
-    print_and_execute "gcloud beta builds triggers create github --name=\"infra-trigger\"  --repo-owner=\"${GITHUB_ORG}\" --repo-name=\"${INFRA_SETUP_REPO}\" --branch-pattern=\".*\" --build-config=\"cloudbuild.yaml\"" 
 }
 
 # Create folder if the FOLDER_NAME was not entered blank
@@ -255,29 +255,80 @@ title_no_wait "Linking billing account to the ${INFRA_SETUP_PROJECT_ID}..."
 print_and_execute "gcloud beta billing projects link ${INFRA_SETUP_PROJECT_ID} \
 --billing-account ${BILLING_ACCOUNT_ID}"
 
-
+#This section is to preserve the state in case the script fails so you can rerun. 
 #echo ${SCRIPT_DIR}/vars.sh
-grep -q "export INFRA_SETUP_PROJECT_ID.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export INFRA_SETUP_PROJECT_ID=${INFRA_SETUP_PROJECT_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
-#grep -q "export APP_SETUP_PROJECT_ID.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export APP_SETUP_PROJECT_ID=${APP_SETUP_PROJECT_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export BILLING_ACCOUNT_ID=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export BILLING_ACCOUNT_ID=${BILLING_ACCOUNT_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export ORG_NAME=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export ORG_NAME=${ORG_NAME}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export ORG_ID=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export ORG_ID=${ORG_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export FOLDER_NAME=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export FOLDER_NAME=${FOLDER_NAME}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export FOLDER_ID=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export FOLDER_ID=${FOLDER_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export INFRA_SETUP_REPO=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export INFRA_SETUP_REPO=${INFRA_SETUP_REPO}" >> ${SCRIPT_DIR}/logs/vars.sh
-#grep -q "export APP_SETUP_REPO=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export APP_SETUP_REPO=${APP_SETUP_REPO}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export GITHUB_USER=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export GITHUB_USER=${GITHUB_USER}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export TOKEN=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export TOKEN=${TOKEN}" >> ${SCRIPT_DIR}/logs/vars.sh
-grep -q "export GITHUB_ORG=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export GITHUB_ORG=${GITHUB_ORG}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export INFRA_SETUP_PROJECT_ID.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export INFRA_SETUP_PROJECT_ID=${INFRA_SETUP_PROJECT_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
+# #grep -q "export APP_SETUP_PROJECT_ID.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export APP_SETUP_PROJECT_ID=${APP_SETUP_PROJECT_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export BILLING_ACCOUNT_ID=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export BILLING_ACCOUNT_ID=${BILLING_ACCOUNT_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export ORG_NAME=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export ORG_NAME=${ORG_NAME}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export ORG_ID=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export ORG_ID=${ORG_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export FOLDER_NAME=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export FOLDER_NAME=${FOLDER_NAME}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export FOLDER_ID=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export FOLDER_ID=${FOLDER_ID}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export INFRA_SETUP_REPO=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export INFRA_SETUP_REPO=${INFRA_SETUP_REPO}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export APP_SETUP_REPO=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export APP_SETUP_REPO=${APP_SETUP_REPO}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export GITHUB_USER=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export GITHUB_USER=${GITHUB_USER}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export TOKEN=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export TOKEN=${TOKEN}" >> ${SCRIPT_DIR}/logs/vars.sh
+# grep -q "export GITHUB_ORG=.*" ${SCRIPT_DIR}/logs/vars.sh || echo -e "export GITHUB_ORG=${GITHUB_ORG}" >> ${SCRIPT_DIR}/logs/vars.sh
 
 
 # # Add WORKDIR to vars
 # grep -q "export WORKDIR=.*" ${SCRIPT_DIR}/vars.sh || echo -e "export WORKDIR=${WORKDIR}" >> ${SCRIPT_DIR}/vars.sh
 
-source ${SCRIPT_DIR}/../vars.sh
+#source ${SCRIPT_DIR}/../vars.sh
 set -e
 
-# Creating github repo in your org and commiting the code from template to it
+# Creating acm repo in your org and commiting the code from template to it
+title_no_wait "Creating infra setup repo ${ACM_REPO}..."
+print_and_execute "repo_id=$(curl -s -H "Authorization: token ${TOKEN}" -H "Accept: application/json" \
+    -d "{ \
+        \"name\": \"${ACM_REPO}\", \
+        \"private\": true \
+      }" \
+   -X POST https://api.github.com/orgs/${GITHUB_ORG}/repos | jq '.id')"
+
+sleep 5
+title_no_wait "Cloning infra setup repo locally..."
+print_and_execute "git clone  https://${GITHUB_USER}:${TOKEN}@github.com/${TEMPLATE_ORG}/${TEMPLATE_ACM_REPO} ${START_DIR}/${TEMPLATE_ACM_REPO}"
+print_and_execute "cd ${START_DIR}/${TEMPLATE_ACM_REPO}"
+
+title_no_wait "Adding remote to https://api.github.com/orgs/${GITHUB_ORG}/${ACM_REPO} ..."
+print_and_execute "git remote add ${ACM_REPO} https://${GITHUB_USER}:${TOKEN}@github.com/${GITHUB_ORG}/${ACM_REPO}" 
+print_and_execute "git remote set-url origin https://${GITHUB_USER}:${TOKEN}@github.com/${GITHUB_ORG}/${ACM_REPO}" 
+print_and_execute "git push origin"
+
+title_no_wait "Pushing staging branch of ${ACM_REPO} to https://api.github.com/orgs/${GITHUB_ORG}/${ACM_REPO} ..."
+print_and_execute "git checkout staging"
+print_and_execute "git push origin"
+
+title_no_wait "Pushing prod branch of ${ACM_REPO} to https://api.github.com/orgs/${GITHUB_ORG}/${ACM_REPO} ..."
+print_and_execute "git checkout prod"
+print_and_execute "git push origin"
+
+#Secure staging and prod branch but disallowing direct push to them
+title_no_wait "Applying branch protection..."
+print_and_execute "curl -s -X PUT -u $GITHUB_USER:$TOKEN -H \"Accept: application/vnd.github.v3+json\" \
+https://api.github.com/repos/$GITHUB_ORG/$ACM_REPO/branches/staging/protection \
+ -d \"{ \
+      \\\"restrictions\\\": null,\\\"required_status_checks\\\": null, \
+      \\\"required_pull_request_reviews\\\" : {\\\"dismissal_restrictions\\\": {}, \
+      \\\"dismiss_stale_reviews\\\": false,\\\"require_code_owner_reviews\\\": true,\
+      \\\"required_approving_review_count\\\": 1,\\\"bypass_pull_request_allowances\\\": {}}, \
+      \\\"enforce_admins\\\": true
+      }\" \
+      "
+
+print_and_execute "curl -s -X PUT -u $GITHUB_USER:$TOKEN -H \"Accept: application/vnd.github.v3+json\" \
+https://api.github.com/repos/$GITHUB_ORG/$ACM_REPO/branches/prod/protection \
+ -d \"{ \
+      \\\"restrictions\\\": null,\\\"required_status_checks\\\": null, \
+      \\\"required_pull_request_reviews\\\" : {\\\"dismissal_restrictions\\\": {}, \
+      \\\"dismiss_stale_reviews\\\": false,\\\"require_code_owner_reviews\\\": true,\
+      \\\"required_approving_review_count\\\": 1,\\\"bypass_pull_request_allowances\\\": {}}, \
+      \\\"enforce_admins\\\": true
+      }\" \
+      "
+
+# Creating platform repo in your org and commiting the code from template to it
 title_no_wait "Creating infra setup repo ${INFRA_SETUP_REPO}..."
 print_and_execute "repo_id=$(curl -s -H "Authorization: token ${TOKEN}" -H "Accept: application/json" \
     -d "{ \
@@ -286,10 +337,10 @@ print_and_execute "repo_id=$(curl -s -H "Authorization: token ${TOKEN}" -H "Acce
       }" \
    -X POST https://api.github.com/orgs/${GITHUB_ORG}/repos | jq '.id')"
 
-
+sleep 5
 title_no_wait "Cloning infra setup repo locally..."
-print_and_execute "git clone  https://${GITHUB_USER}:${TOKEN}@github.com/${TEMPLATE_ORG}/${TEMPLATE_INFRA_REPO}"
-print_and_execute "cd ${TEMPLATE_INFRA_REPO}"
+print_and_execute "git clone  https://${GITHUB_USER}:${TOKEN}@github.com/${TEMPLATE_ORG}/${TEMPLATE_INFRA_REPO} ${START_DIR}/${TEMPLATE_INFRA_REPO}"
+print_and_execute "cd ${START_DIR}/${TEMPLATE_INFRA_REPO}"
 
 title_no_wait "Adding remote to https://api.github.com/orgs/${GITHUB_ORG}/${INFRA_SETUP_REPO} ..."
 print_and_execute "git remote add ${INFRA_SETUP_REPO} https://${GITHUB_USER}:${TOKEN}@github.com/${GITHUB_ORG}/${INFRA_SETUP_REPO}" 
@@ -328,6 +379,7 @@ https://api.github.com/repos/$GITHUB_ORG/$INFRA_SETUP_REPO/branches/prod/protect
       }\" \
       "
 
+
 #Setting up the infrastructure setup project
 title_no_wait "Setting project..."
 print_and_execute "gcloud config set project ${INFRA_SETUP_PROJECT_ID}"
@@ -349,7 +401,7 @@ title_no_wait "Fetching IAM Group ID that you created above..."
 print_and_execute "GROUP_ID=$(gcloud beta identity groups describe "${IAM_GROUP}@${ORG_NAME}" --format=json | jq '.name' | tr '"' ' ' | awk -F '/' '{print $2}')"
 
 title_and_wait "ATTENTION : We need to update the IAM group to allow external members so we can add service accounts to it. As of now, there is no easy way of doing it automatically, press ENTER for instructions for doing it manually."
-title_and_wait_step "Go to https://admin.google.com/u/2/ac/groups/${GROUP_ID} . Click Access Settings. Click the pencil icon and turn on the Allow members outside your organization setting. Click Save."
+title_and_wait_step "Go to https://admin.google.com/u/2/ac/groups/${GROUP_ID} . If it asks for credentials, enter them for the user running the script. Click Access Settings. Click the pencil icon and turn on the Allow members outside your organization setting. Click Save."
 
 title_no_wait "Granting required roles to the IAM goup..."
 print_and_execute "gcloud organizations add-iam-policy-binding ${ORG_ID} --member group:"${IAM_GROUP}@${ORG_NAME}"  --role=roles/secretmanager.viewer --condition=None"
@@ -372,14 +424,14 @@ print_and_execute "gcloud projects add-iam-policy-binding ${INFRA_SETUP_PROJECT_
 title_no_wait "Adding github token to secret manager..."
 print_and_execute "printf ${TOKEN} | gcloud secrets create ${GITHUB_SECRET_NAME} --data-file=-"
 
-INFRA_TF_BUCKET="${INFRA_SETUP_PROJECT_ID}-infra-tf"
+INFRA_TF_BUCKET="${INFRA_SETUP_PROJECT_ID}-platform-tf"
 
 title_no_wait "Creating GCS bucket for holding terraform state files..."
 print_and_execute "gsutil mb gs://${INFRA_TF_BUCKET}"
 
 generate_api_key
 create_webhook
-
+cd ${START_DIR}/${TEMPLATE_INFRA_REPO}
 title_no_wait "Checkout dev branch..."
 print_and_execute "git checkout dev"
 
@@ -388,6 +440,9 @@ sed -i "s/YOUR_INFRA_PROJECT_ID/${INFRA_SETUP_PROJECT_ID}/"  env/*/variables.tf
 sed -i "s/YOUR_IAM_GROUP/${IAM_GROUP}@${ORG_NAME}/"  env/*/variables.tf
 sed -i "s/YOUR_BILLING_ACCOUNT/${BILLING_ACCOUNT_ID}/"  env/*/variables.tf
 sed -i "s/YOUR_ORG_ID/${ORG_ID}/"  env/*/variables.tf
+sed -i "s/YOUR_ACM_REPO/${ACM_REPO}/" env/*/variables.tf
+sed -i "s/YOUR_GITHUB_USER/${GITHUB_USER}/"  env/*/variables.tf
+sed -i "s/YOUR_GITHUB_ORG/${GITHUB_ORG}/"  env/*/variables.tf
 if [[ -n ${FOLDER_ID} ]]; then
     sed -i "s/YOUR_FOLDER_ID/${FOLDER_ID}/"  env/*/variables.tf
 else
@@ -395,13 +450,14 @@ else
 fi
 
 title_no_wait "Replacing variables in variables.tf under dev folder only in ${INFRA_SETUP_REPO}..."
-sed -i "s/YOUR_GITHUB_USER/${GITHUB_USER}/"  env/dev/variables.tf
 sed -i "s/YOUR_GITHUB_EMAIL/${GITHUB_USER}@github.com/"  env/dev/variables.tf
-sed -i "s/YOUR_GITHUB_ORG/${GITHUB_ORG}/"  env/dev/variables.tf
 sed -i "s/YOUR_GROUP_ID/${GROUP_ID}/"  env/dev/variables.tf
 
-title_no_wait "Replacing tf bucker in backend.tf in ${INFRA_SETUP_REPO}..."
+title_no_wait "Replacing tf bucket in backend.tf in ${INFRA_SETUP_REPO}..."
 sed -i "s/YOUR_PLATFORM_INFRA_TERRAFORM_STATE_BUCKET/${INFRA_TF_BUCKET}/" env/*/backend.tf
+
+title_no_wait "Replacing variables in cloudbuild.yaml in ${INFRA_SETUP_REPO}..."
+sed -i "s/YOUR_GITHUB_USER/${GITHUB_USER}/"  cloudbuild.yaml
 
 title_no_wait "Committing and pushing changes to ${INFRA_SETUP_REPO}..."
 git add env/*/variables.tf env/*/backend.tf
