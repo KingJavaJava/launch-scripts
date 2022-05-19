@@ -111,8 +111,8 @@ while [ -z ${IAM_GROUP} ]
     done
     
 # This will change based on where we keep the template repos    
-TEMPLATE_ORG="cloudguy-dev"
-TEMPLATE_INFRA_REPO="software-delivery-platform-infra"
+TEMPLATE_ORG="KingJavaJava"
+TEMPLATE_INFRA_REPO="multi-tenant-platform-repo"
 TEMPLATE_ACM_REPO="acm-template"
 ACM_REPO="acm-${INFRA_SETUP_REPO}"
 GITHUB_SECRET_NAME="github-token"

@@ -122,8 +122,8 @@ while [ -z ${IAM_GROUP} ]
     done
     
 # This will change based on where we keep the template repos    
-TEMPLATE_ORG="cloudguy-dev"
-TEMPLATE_APP_REPO="software-delivery-app-infra"
+TEMPLATE_ORG="KingJavaJava"
+TEMPLATE_APP_REPO="app-factory-repo"
 CUSTOM_SA="devops-sa-${PROJECT_ID_SUFFIX}"
 GITHUB_SECRET_NAME="github-token-app"
 TEAM_TRIGGER_NAME="add-team-files"
